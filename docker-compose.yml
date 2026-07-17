@@ -1,0 +1,55 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: simbionte-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-simbionte}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-simbionte}
+      POSTGRES_DB: ${POSTGRES_DB:-simbionte}
+    ports:
+      - "55432:5432"
+    volumes:
+      - simbionte_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-simbionte} -d ${POSTGRES_DB:-simbionte}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: simbionte-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - simbionte_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: simbionte-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-simbionte}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-simbionte}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - simbionte_rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  simbionte_postgres_data:
+  simbionte_redis_data:
+  simbionte_rabbitmq_data:
