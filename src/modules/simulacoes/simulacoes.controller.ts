@@ -7,6 +7,7 @@ import {
   idParamSchema,
   listarCiclosQuerySchema,
   numeroCicloParamSchema,
+  obterCicloQuerySchema,
 } from "./simulacoes.validators.ts";
 
 function usuarioAutenticado(req: Request): number {
@@ -73,7 +74,8 @@ export async function listarCiclos(req: Request, res: Response) {
 
 export async function obterCiclo(req: Request, res: Response) {
   const { id, numero } = numeroCicloParamSchema.parse(req.params);
-  const ciclo = await service.obterCiclo(usuarioAutenticado(req), id, numero);
+  const query = obterCicloQuerySchema.parse(req.query);
+  const ciclo = await service.obterCiclo(usuarioAutenticado(req), id, numero, query);
   res.status(200).json({ ciclo });
 }
 

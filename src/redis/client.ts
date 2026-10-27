@@ -1,5 +1,6 @@
 import { Redis } from "ioredis";
 import { env } from "../config/env.ts";
+import { logger } from "../utils/logger.ts";
 
 export const redis = new Redis(env.redisUrl, {
   lazyConnect: false,
@@ -7,5 +8,5 @@ export const redis = new Redis(env.redisUrl, {
 });
 
 redis.on("error", (error: Error) => {
-  console.error("Erro na conexão com o Redis:", error.message);
+  logger.error({ err: error }, "erro na conexão com o Redis");
 });

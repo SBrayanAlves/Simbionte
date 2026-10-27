@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { authGuard } from "../../middleware/authGuard.ts";
+import { cicloManualRateLimit } from "../../middleware/rateLimit.ts";
 import * as controller from "./simulacoes.controller.ts";
 
 export const simulacoesRouter = Router();
@@ -15,7 +16,7 @@ simulacoesRouter.get("/simulacoes/:id/agentes", controller.listarAgentes);
 
 simulacoesRouter.post("/simulacoes/:id/ciclos/iniciar", controller.iniciarCiclos);
 simulacoesRouter.post("/simulacoes/:id/ciclos/parar", controller.pararCiclos);
-simulacoesRouter.post("/simulacoes/:id/ciclos/executar", controller.executarCiclo);
+simulacoesRouter.post("/simulacoes/:id/ciclos/executar", cicloManualRateLimit, controller.executarCiclo);
 simulacoesRouter.get("/simulacoes/:id/ciclos", controller.listarCiclos);
 simulacoesRouter.get("/simulacoes/:id/ciclos/:numero", controller.obterCiclo);
 

@@ -39,6 +39,7 @@ function esperar(ms: number, signal: AbortSignal): Promise<void> {
 export class StubLlmGateway implements LlmGateway {
   async decidir(pedido: PedidoDecisao): Promise<RespostaGateway> {
     const { agente, relatorio, prompt, signal } = pedido;
+    if (signal.aborted) throw new Error("Requisição abortada");
     const tokensEntrada = estimarTokens(prompt.system + prompt.user);
 
     const atraso = /\[\[STUB:ATRASO=(\d+)\]\]/.exec(agente.promptAlma);

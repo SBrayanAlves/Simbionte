@@ -1,10 +1,13 @@
+import { env } from "../../config/env.ts";
 import { prisma } from "../../db/prisma.ts";
+import { publicarEvento } from "../../queue/rabbitmq.ts";
 import { Errors } from "../../utils/errors.ts";
 import { orquestrador, resumir } from "../ciclos/orquestrador.ts";
 import type {
   CriarAgenteInput,
   CriarSimulacaoInput,
   ListarCiclosQuery,
+  ObterCicloQuery,
 } from "./simulacoes.validators.ts";
 
 /** Garante que a simulação existe e pertence ao usuário; caso contrário responde 404. */
@@ -14,6 +17,22 @@ async function obterPropria(usuarioId: number, simulacaoId: number) {
   });
   if (!simulacao) throw Errors.notFound("Simulação não encontrada");
   return simulacao;
+}
+
+function exigirIntervaloMinimo(intervaloSegundos: number) {
+  if (intervaloSegundos < env.intervaloMinimoSegundos) {
+    throw Errors.unprocessable(
+      "intervalo_abaixo_do_minimo",
+      `O intervalo mínimo entre ciclos é de ${env.intervaloMinimoSegundos} segundo(s)`,
+    );
+  }
+}
+
+async function exigirAgentesAtivos(simulacaoId: number) {
+  const agentes = await prisma.agent.count({ where: { simulacaoId, ativo: true } });
+  if (agentes === 0) {
+    throw Errors.conflict("sem_agentes", "A simulação não tem agentes ativos para participar do ciclo");
+  }
 }
 
 function publica(simulacao: {
@@ -28,12 +47,21 @@ function publica(simulacao: {
     nome: simulacao.nome,
     intervaloSegundos: simulacao.intervaloSegundos,
     situacao: simulacao.situacao,
-    emExecucao: orquestrador.estaAtivo(simulacao.id),
+    // O laço roda no worker; "em execução" é o que está gravado no banco.
+    emExecucao: simulacao.situacao === "EXECUTANDO",
     createdAt: simulacao.createdAt,
   };
 }
 
 export async function criarSimulacao(usuarioId: number, input: CriarSimulacaoInput) {
+  exigirIntervaloMinimo(input.intervaloSegundos);
+  const existentes = await prisma.simulacao.count({ where: { usuarioId } });
+  if (existentes >= env.maxSimulacoesPorUsuario) {
+    throw Errors.unprocessable(
+      "limite_simulacoes",
+      `Limite de ${env.maxSimulacoesPorUsuario} simulações por usuário atingido`,
+    );
+  }
   const simulacao = await prisma.simulacao.create({
     data: { usuarioId, nome: input.nome, intervaloSegundos: input.intervaloSegundos },
   });
@@ -83,6 +111,13 @@ function agentePublico(agente: {
 
 export async function criarAgente(usuarioId: number, simulacaoId: number, input: CriarAgenteInput) {
   await obterPropria(usuarioId, simulacaoId);
+  const existentes = await prisma.agent.count({ where: { simulacaoId } });
+  if (existentes >= env.maxAgentesPorSimulacao) {
+    throw Errors.unprocessable(
+      "limite_agentes",
+      `Limite de ${env.maxAgentesPorSimulacao} agentes por simulação atingido`,
+    );
+  }
   const agente = await prisma.agent.create({
     data: {
       usuarioId,
@@ -104,28 +139,36 @@ export async function listarAgentes(usuarioId: number, simulacaoId: number) {
   return agentes.map(agentePublico);
 }
 
+/**
+ * Liga o laço contínuo: só grava EXECUTANDO; o worker percebe na próxima sincronização.
+ * A troca é condicional no banco, então duas chamadas simultâneas não passam juntas.
+ */
 export async function iniciarCiclos(usuarioId: number, simulacaoId: number) {
   const simulacao = await obterPropria(usuarioId, simulacaoId);
-  const agentes = await prisma.agent.count({ where: { simulacaoId, ativo: true } });
-  if (agentes === 0) {
-    throw Errors.conflict("sem_agentes", "A simulação não tem agentes ativos para participar do ciclo");
+  exigirIntervaloMinimo(simulacao.intervaloSegundos);
+  await exigirAgentesAtivos(simulacaoId);
+
+  const { count } = await prisma.simulacao.updateMany({
+    where: { id: simulacaoId, usuarioId, situacao: { not: "EXECUTANDO" } },
+    data: { situacao: "EXECUTANDO" },
+  });
+  if (count === 0) {
+    throw Errors.conflict("simulacao_em_execucao", "A simulação já está em execução");
   }
-  await orquestrador.iniciar(simulacao.id);
+  publicarEvento("simulacao.situacao", { simulacaoId, situacao: "EXECUTANDO" });
   return publica({ ...simulacao, situacao: "EXECUTANDO" });
 }
 
+/** Para o laço. Um ciclo em andamento termina normalmente; nenhum novo é iniciado. */
 export async function pararCiclos(usuarioId: number, simulacaoId: number) {
   const simulacao = await obterPropria(usuarioId, simulacaoId);
-  await orquestrador.parar(simulacao.id);
+  await prisma.simulacao.update({ where: { id: simulacaoId }, data: { situacao: "PAUSADA" } });
+  publicarEvento("simulacao.situacao", { simulacaoId, situacao: "PAUSADA" });
   return publica({ ...simulacao, situacao: "PAUSADA" });
 }
 
 export async function executarCiclo(usuarioId: number, simulacaoId: number) {
   await obterPropria(usuarioId, simulacaoId);
-  const agentes = await prisma.agent.count({ where: { simulacaoId, ativo: true } });
-  if (agentes === 0) {
-    throw Errors.conflict("sem_agentes", "A simulação não tem agentes ativos para participar do ciclo");
-  }
   return orquestrador.executarCiclo(simulacaoId);
 }
 
@@ -147,24 +190,43 @@ export async function listarCiclos(
   return { total, ciclos: ciclos.map(resumir) };
 }
 
-export async function obterCiclo(usuarioId: number, simulacaoId: number, numero: number) {
+/**
+ * Ciclo com logs paginados (`limit` padrão 100, teto 500) e filtráveis por `fase` e `agentId`.
+ * Os `detalhes` dos logs de percepção só vêm com `detalhes=true`; a parte do relatório comum
+ * a todos os agentes vem uma vez, em `relatorioComum`.
+ */
+export async function obterCiclo(
+  usuarioId: number,
+  simulacaoId: number,
+  numero: number,
+  { fase, agentId, limit, offset, detalhes }: ObterCicloQuery,
+) {
   await obterPropria(usuarioId, simulacaoId);
   const ciclo = await prisma.ciclo.findUnique({
     where: { simulacaoId_numero: { simulacaoId, numero } },
-    include: { logs: { orderBy: { id: "asc" } } },
   });
   if (!ciclo) throw Errors.notFound("Ciclo não encontrado");
 
-  const { logs, ...dados } = ciclo;
+  const filtro = { cicloId: ciclo.id, ...(fase ? { fase } : {}), ...(agentId ? { agentId } : {}) };
+  const [totalLogs, logs] = await Promise.all([
+    prisma.logCiclo.count({ where: filtro }),
+    prisma.logCiclo.findMany({ where: filtro, orderBy: { id: "asc" }, take: limit, skip: offset }),
+  ]);
+
+  const { relatorioComum, ...dados } = ciclo;
   return {
     ...resumir(dados),
+    relatorioComum,
+    totalLogs,
+    limit,
+    offset,
     logs: logs.map((log) => ({
       id: log.id,
       agentId: log.agentId,
       fase: log.fase,
       acao: log.acao,
       valido: log.valido,
-      detalhes: log.detalhes,
+      ...(log.fase !== "PERCEPCAO" || detalhes ? { detalhes: log.detalhes } : {}),
       latenciaMs: log.latenciaMs,
       tokensEntrada: log.tokensEntrada,
       tokensSaida: log.tokensSaida,

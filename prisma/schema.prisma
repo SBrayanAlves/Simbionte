@@ -37,7 +37,7 @@ model Usuario {
   id        Int      @id @default(autoincrement())
   nome      String
   email     String   @unique
-  senha     String
+  senhaHash String   @map("senha_hash")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -97,6 +97,8 @@ model Ciclo {
   totalAgentes    Int           @default(0) @map("total_agentes")
   decisoesValidas Int           @default(0) @map("decisoes_validas")
   erro            String?
+  /// Parte do relatório de percepção igual para todos os agentes (ranking, tópicos, ações), gravada uma vez por ciclo.
+  relatorioComum  Json?         @map("relatorio_comum")
 
   simulacao Simulacao  @relation(fields: [simulacaoId], references: [id], onDelete: Cascade)
   logs      LogCiclo[]
@@ -123,5 +125,6 @@ model LogCiclo {
 
   @@index([cicloId, fase])
   @@index([agentId, createdAt])
+  @@index([fase, createdAt])
   @@map("logs")
 }

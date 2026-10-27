@@ -36,3 +36,11 @@ export async function me(req: Request, res: Response) {
 
   res.status(200).json({ usuario });
 }
+
+export async function logoutAll(req: Request, res: Response) {
+  const usuarioId = req.usuarioId;
+  if (!usuarioId) throw Errors.unauthorized();
+
+  const sessoesEncerradas = await authService.logoutTodasSessoes(usuarioId);
+  res.status(200).json({ sessoesEncerradas });
+}

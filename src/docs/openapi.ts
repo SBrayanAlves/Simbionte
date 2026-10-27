@@ -59,7 +59,7 @@ export const openApiSpec = {
   openapi: "3.0.3",
   info: {
     title: "Simbionte — API",
-    version: "1.1.0",
+    version: "1.2.0",
     description:
       "Autenticação (cadastro, login, renovação e logout) e orquestração do ciclo de simulação (percepção e decisão) do ecossistema Simbionte, expostos para consumo do Subgrupo B. " +
       "O access token é um JWT de curta duração (padrão 15 min) e deve ser enviado no header `Authorization: Bearer <token>`. " +
@@ -93,7 +93,13 @@ export const openApiSpec = {
         properties: {
           nome: { type: "string", minLength: 2, maxLength: 120, example: "Ana Teste" },
           email: { type: "string", format: "email", example: "ana@example.com" },
-          senha: { type: "string", minLength: 8, maxLength: 128, example: "senha1234" },
+          senha: {
+            type: "string",
+            minLength: 8,
+            maxLength: 72,
+            description: "No máximo 72 bytes em UTF-8 (limite do bcrypt); caracteres acentuados ocupam 2 bytes",
+            example: "senha1234",
+          },
         },
         required: ["nome", "email", "senha"],
       },
@@ -154,7 +160,13 @@ export const openApiSpec = {
       CriarAgenteRequest: {
         type: "object",
         properties: {
-          nomeAgente: { type: "string", example: "Verificador Implacável" },
+          nomeAgente: {
+            type: "string",
+            maxLength: 64,
+            pattern: "^[\\p{L}\\p{N} _.,-]{2,64}$",
+            description: "Aparece no relatório dos outros agentes; só letras, números, espaço e _ . , -",
+            example: "Verificador Implacável",
+          },
           provedorLlm: { type: "string", example: "openai" },
           promptAlma: {
             type: "string",
@@ -191,6 +203,48 @@ export const openApiSpec = {
           erro: { type: "string", nullable: true },
         },
       },
+      CicloDetalhado: {
+        allOf: [
+          { $ref: "#/components/schemas/Ciclo" },
+          {
+            type: "object",
+            properties: {
+              relatorioComum: {
+                type: "object",
+                nullable: true,
+                description:
+                  "Parte do relatório de percepção igual para todos os agentes (dia, ranking, tópicos em alta, " +
+                  "ações impactantes do ciclo anterior), gravada uma vez por ciclo.",
+              },
+              totalLogs: { type: "integer", description: "Total de logs que atendem aos filtros" },
+              limit: { type: "integer" },
+              offset: { type: "integer" },
+              logs: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    id: { type: "integer" },
+                    agentId: { type: "integer", nullable: true },
+                    fase: { type: "string", enum: ["PERCEPCAO", "DECISAO"] },
+                    acao: { type: "string", nullable: true },
+                    valido: { type: "boolean" },
+                    detalhes: {
+                      type: "object",
+                      description:
+                        "PERCEPCAO: `{ agente }` (só com `detalhes=true`). DECISAO: `{ resposta, bruto, erro, tentativas, alertas? }`; " +
+                        "`alertas` lista padrões de injeção de prompt encontrados na resposta.",
+                    },
+                    latenciaMs: { type: "integer", nullable: true },
+                    tokensEntrada: { type: "integer", nullable: true },
+                    tokensSaida: { type: "integer", nullable: true },
+                  },
+                },
+              },
+            },
+          },
+        ],
+      },
     },
   },
   paths: {
@@ -215,7 +269,7 @@ export const openApiSpec = {
             },
           },
           "400": { description: "Dados inválidos", content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } } },
-          "409": { description: "E-mail já cadastrado", content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } } },
+          "409": { description: "E-mail já cadastrado (intencional: o cadastro precisa avisar o usuário)", content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } } },
           "429": { description: "Muitas tentativas", content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } } },
         },
       },
@@ -254,7 +308,9 @@ export const openApiSpec = {
         summary: "Renova a sessão a partir de um refresh token válido",
         description:
           "O refresh token informado é invalidado (rotação) e um novo par access/refresh é emitido. " +
-          "Reutilizar um refresh token já consumido resulta em 401.",
+          "Reutilizar um refresh token já consumido resulta em 401 **e revoga a sessão inteira** (todos os tokens " +
+          "emitidos a partir do mesmo login), porque indica que o token vazou. Limite: 60 chamadas / 15 min por IP " +
+          "(compartilhado com /auth/logout).",
         requestBody: {
           required: true,
           content: { "application/json": { schema: { $ref: "#/components/schemas/RefreshRequest" } } },
@@ -266,6 +322,7 @@ export const openApiSpec = {
           },
           "400": { description: "Dados inválidos", content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } } },
           "401": { description: "Refresh token inválido ou expirado", content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } } },
+          "429": { description: "Muitas tentativas", content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } } },
         },
       },
     },
@@ -283,6 +340,28 @@ export const openApiSpec = {
         responses: {
           "204": { description: "Sessão encerrada" },
           "400": { description: "Dados inválidos", content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } } },
+          "429": { description: "Muitas tentativas", content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } } },
+        },
+      },
+    },
+    "/auth/logout-all": {
+      post: {
+        tags: ["Auth"],
+        summary: "Encerra todas as sessões do usuário autenticado",
+        description:
+          "Revoga todos os refresh tokens do usuário (todos os dispositivos). Access tokens já emitidos " +
+          "continuam válidos até expirar (no máximo `JWT_ACCESS_TTL_MINUTES`).",
+        security: [{ bearerAuth: [] }],
+        responses: {
+          "200": {
+            description: "Sessões encerradas",
+            content: {
+              "application/json": {
+                schema: { type: "object", properties: { sessoesEncerradas: { type: "integer", example: 2 } } },
+              },
+            },
+          },
+          "401": { description: "Access token ausente, inválido ou expirado", content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } } },
         },
       },
     },
@@ -317,6 +396,7 @@ export const openApiSpec = {
           "201": simulacaoResposta("Simulação criada"),
           "400": erro("Dados inválidos"),
           "401": erro("Não autenticado"),
+          "422": erro("`limite_simulacoes` (MAX_SIMULACOES_POR_USUARIO) ou `intervalo_abaixo_do_minimo` (INTERVALO_MINIMO_SEGUNDOS)"),
         },
       },
       get: {
@@ -373,9 +453,10 @@ export const openApiSpec = {
               },
             },
           },
-          "400": erro("Dados inválidos"),
+          "400": erro("Dados inválidos (`nomeAgente`: só letras, números, espaço e _ . , -, até 64)"),
           "401": erro("Não autenticado"),
           "404": erro("Simulação inexistente ou de outro usuário"),
+          "422": erro("`limite_agentes` (MAX_AGENTES_POR_SIMULACAO)"),
         },
       },
       get: {
@@ -405,8 +486,9 @@ export const openApiSpec = {
         tags: ["Ciclos"],
         summary: "Inicia o laço contínuo de ciclos (serviço de início de ciclo)",
         description:
-          "Liga o orquestrador para a simulação: o primeiro ciclo começa imediatamente e os seguintes a cada " +
-          "`intervaloSegundos`, sempre depois que o anterior termina (nunca há dois ciclos simultâneos). " +
+          "Marca a simulação como EXECUTANDO. O worker (`npm run worker`) a assume na próxima sincronização " +
+          "(`WORKER_SINCRONIZACAO_SEGUNDOS`): o primeiro ciclo começa logo e os seguintes a cada `intervaloSegundos`, " +
+          "sempre depois que o anterior termina (nunca há dois ciclos simultâneos, nem com vários workers). " +
           "Responde 202 sem esperar o ciclo. Exige ao menos um agente ativo.",
         security: [{ bearerAuth: [] }],
         parameters: [simulacaoIdParam],
@@ -415,6 +497,7 @@ export const openApiSpec = {
           "401": erro("Não autenticado"),
           "404": erro("Simulação inexistente ou de outro usuário"),
           "409": erro("`simulacao_em_execucao` ou `sem_agentes`"),
+          "422": erro("`intervalo_abaixo_do_minimo`"),
         },
       },
     },
@@ -436,6 +519,9 @@ export const openApiSpec = {
       post: {
         tags: ["Ciclos"],
         summary: "Executa um único ciclo e aguarda o resultado",
+        description:
+          "Roda o ciclo no processo da API. Limite por usuário: `RATE_LIMIT_CICLO_MANUAL_MAX` por minuto. " +
+          "Responde 409 se outro processo (um worker) estiver no meio de um ciclo da mesma simulação.",
         security: [{ bearerAuth: [] }],
         parameters: [simulacaoIdParam],
         responses: {
@@ -443,6 +529,7 @@ export const openApiSpec = {
           "401": erro("Não autenticado"),
           "404": erro("Simulação inexistente ou de outro usuário"),
           "409": erro("`ciclo_em_andamento` ou `sem_agentes`"),
+          "429": erro("Muitas execuções manuais"),
         },
       },
     },
@@ -479,18 +566,37 @@ export const openApiSpec = {
     "/simulacoes/{id}/ciclos/{numero}": {
       get: {
         tags: ["Ciclos"],
-        summary: "Detalha um ciclo com os logs de percepção e decisão de cada agente",
+        summary: "Detalha um ciclo com os logs de percepção e decisão (paginados)",
         description:
-          "Cada log de PERCEPCAO traz o relatório de estado enviado ao agente. Cada log de DECISAO traz a " +
-          "resposta validada (`detalhes.resposta`), a resposta bruta, o número de tentativas, o erro (se houve), " +
-          "a latência e os tokens de entrada e saída.",
+          "`relatorioComum` traz a parte do relatório de estado igual para todos os agentes; o relatório de um " +
+          "agente é `relatorioComum` + o `detalhes.agente` do log de PERCEPCAO dele (enviado só com `detalhes=true`). " +
+          "Cada log de DECISAO traz a resposta validada (`detalhes.resposta`), a resposta bruta, o número de " +
+          "tentativas, o erro (se houve), a latência e os tokens de entrada e saída.",
         security: [{ bearerAuth: [] }],
         parameters: [
           simulacaoIdParam,
           { name: "numero", in: "path", required: true, schema: { type: "integer" } },
+          { name: "fase", in: "query", schema: { type: "string", enum: ["PERCEPCAO", "DECISAO"] } },
+          { name: "agentId", in: "query", schema: { type: "integer" } },
+          { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 500, default: 100 } },
+          { name: "offset", in: "query", schema: { type: "integer", minimum: 0, default: 0 } },
+          {
+            name: "detalhes",
+            in: "query",
+            schema: { type: "string", enum: ["true", "false"], default: "false" },
+            description: "Inclui `detalhes` dos logs de PERCEPCAO",
+          },
         ],
         responses: {
-          "200": ciclo("Ciclo com logs"),
+          "200": {
+            description: "Ciclo com logs",
+            content: {
+              "application/json": {
+                schema: { type: "object", properties: { ciclo: { $ref: "#/components/schemas/CicloDetalhado" } } },
+              },
+            },
+          },
+          "400": erro("Parâmetros inválidos"),
           "401": erro("Não autenticado"),
           "404": erro("Simulação ou ciclo inexistente"),
         },
@@ -515,9 +621,21 @@ export const openApiSpec = {
     "/health": {
       get: {
         tags: ["Sistema"],
-        summary: "Verifica a saúde do serviço e suas dependências (Postgres, Redis, RabbitMQ)",
+        summary: "Saúde da API (público; não revela o estado de cada serviço)",
+        responses: {
+          "200": { description: "`{ status: \"ok\" }`: Postgres, Redis e RabbitMQ operacionais" },
+          "503": { description: "`{ status: \"degraded\" }`: um ou mais serviços indisponíveis" },
+        },
+      },
+    },
+    "/health/detalhes": {
+      get: {
+        tags: ["Sistema"],
+        summary: "Estado de cada dependência (Postgres, Redis, RabbitMQ)",
+        security: [{ bearerAuth: [] }],
         responses: {
           "200": { description: "Todos os serviços operacionais" },
+          "401": erro("Não autenticado"),
           "503": { description: "Um ou mais serviços indisponíveis" },
         },
       },

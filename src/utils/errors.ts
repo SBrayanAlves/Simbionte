@@ -22,4 +22,6 @@ export const Errors = {
   notFound: (message = "Recurso não encontrado") =>
     new AppError(404, "not_found", message),
   conflict: (code: string, message: string) => new AppError(409, code, message),
+  /** Regra de negócio violada (cotas, intervalo mínimo). */
+  unprocessable: (code: string, message: string) => new AppError(422, code, message),
 };

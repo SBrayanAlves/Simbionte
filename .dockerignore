@@ -1,0 +1,11 @@
+node_modules
+src/generated
+.env
+.env.*
+!.env.example
+.git
+.github
+Documentation
+tests
+coverage
+*.log
