@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verificar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: simbionte
+          POSTGRES_PASSWORD: ci-senha
+          POSTGRES_DB: simbionte
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U simbionte -d simbionte"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+
+    env:
+      # Os testes usam simbionte_test e o banco 1 do Redis (derivados destas URLs).
+      DATABASE_URL: postgresql://simbionte:ci-senha@localhost:5432/simbionte
+      REDIS_URL: redis://localhost:6379
+      RABBITMQ_URL: amqp://ci:ci@localhost:5672
+      JWT_ACCESS_SECRET: segredo-de-ci-usado-apenas-nos-testes-0123456789
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm audit --audit-level=high
+      - run: npm test

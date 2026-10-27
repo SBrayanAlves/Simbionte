@@ -1,18 +1,20 @@
+# Infraestrutura local. As portas ficam presas em 127.0.0.1: nada é exposto para a rede.
+# As senhas são obrigatórias e vêm do .env (gere com `npm run setup`).
 services:
   postgres:
     image: postgres:16-alpine
     container_name: simbionte-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-simbionte}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-simbionte}
-      POSTGRES_DB: ${POSTGRES_DB:-simbionte}
+      POSTGRES_USER: ${POSTGRES_USER:?defina POSTGRES_USER no .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}
+      POSTGRES_DB: ${POSTGRES_DB:?defina POSTGRES_DB no .env}
     ports:
-      - "55432:5432"
+      - "127.0.0.1:55432:5432"
     volumes:
       - simbionte_postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-simbionte} -d ${POSTGRES_DB:-simbionte}"]
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -21,12 +23,15 @@ services:
     image: redis:7-alpine
     container_name: simbionte-redis
     restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?defina REDIS_PASSWORD no .env}
+    command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\""]
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - simbionte_redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -36,11 +41,11 @@ services:
     container_name: simbionte-rabbitmq
     restart: unless-stopped
     environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-simbionte}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-simbionte}
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:?defina RABBITMQ_USER no .env}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?defina RABBITMQ_PASSWORD no .env}
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
     volumes:
       - simbionte_rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
@@ -48,6 +53,55 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  # ---------------------------------------------------------------------------
+  # Aplicação em contêiner (opcional): `docker compose --profile app up -d --build`
+  # Dentro da rede do compose os serviços são acessados pelo nome (postgres, redis, rabbitmq).
+  # ---------------------------------------------------------------------------
+  migrate:
+    profiles: ["app"]
+    build:
+      context: .
+      target: build
+    command: ["npx", "prisma", "migrate", "deploy"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    profiles: ["app"]
+    build: .
+    container_name: simbionte-api
+    restart: unless-stopped
+    env_file: .env
+    environment: &app-env
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on: &app-deps
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  worker:
+    profiles: ["app"]
+    build: .
+    container_name: simbionte-worker
+    restart: unless-stopped
+    command: ["node", "src/worker.ts"]
+    healthcheck:
+      disable: true
+    env_file: .env
+    environment: *app-env
+    depends_on: *app-deps
 
 volumes:
   simbionte_postgres_data:

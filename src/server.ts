@@ -1,23 +1,23 @@
 import { app } from "./app.ts";
 import { env } from "./config/env.ts";
 import { prisma } from "./db/prisma.ts";
+import { fecharTravas } from "./db/travas.ts";
 import { redis } from "./redis/client.ts";
-import { connectRabbitMQ } from "./queue/rabbitmq.ts";
+import { closeRabbitMQ, connectRabbitMQ } from "./queue/rabbitmq.ts";
+import { orquestrador } from "./modules/ciclos/orquestrador.ts";
+import { logger } from "./utils/logger.ts";
+import { instalarCicloDeVida } from "./utils/processo.ts";
 
-connectRabbitMQ().catch((error: Error) => {
-  console.error("Não foi possível conectar ao RabbitMQ na inicialização:", error.message);
-});
+// API HTTP. O laço contínuo dos ciclos roda no worker (`npm run worker`); aqui só a
+// execução manual de um ciclo (POST /simulacoes/:id/ciclos/executar).
+void connectRabbitMQ();
 
 const server = app.listen(env.port, () => {
-  console.log(`Simbionte backend rodando na porta ${env.port} (${env.nodeEnv})`);
+  logger.info({ porta: env.port, ambiente: env.nodeEnv }, "Simbionte API rodando");
 });
 
-async function shutdown(signal: string) {
-  console.log(`Recebido ${signal}, encerrando com segurança...`);
-  server.close();
-  await Promise.allSettled([prisma.$disconnect(), redis.quit()]);
-  process.exit(0);
-}
-
-process.on("SIGINT", () => void shutdown("SIGINT"));
-process.on("SIGTERM", () => void shutdown("SIGTERM"));
+instalarCicloDeVida("api", async () => {
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  await orquestrador.encerrar();
+  await Promise.allSettled([prisma.$disconnect(), redis.quit(), closeRabbitMQ(), fecharTravas()]);
+});

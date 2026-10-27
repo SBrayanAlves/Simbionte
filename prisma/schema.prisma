@@ -1,8 +1,6 @@
 // This is your Prisma schema file,
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
-// Get a free hosted Postgres database in seconds: `npx create-db`
-
 generator client {
   provider = "prisma-client"
   output   = "../src/generated/prisma"
@@ -12,13 +10,121 @@ datasource db {
   provider = "postgresql"
 }
 
+enum SituacaoSimulacao {
+  CRIADA
+  EXECUTANDO
+  PAUSADA
+
+  @@map("situacao_simulacao")
+}
+
+enum SituacaoCiclo {
+  EM_ANDAMENTO
+  CONCLUIDO
+  FALHOU
+
+  @@map("situacao_ciclo")
+}
+
+enum FaseCiclo {
+  PERCEPCAO
+  DECISAO
+
+  @@map("fase_ciclo")
+}
+
 model Usuario {
   id        Int      @id @default(autoincrement())
   nome      String
   email     String   @unique
-  senha     String
+  senhaHash String   @map("senha_hash")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  simulacoes Simulacao[]
+  agents     Agent[]
+
   @@map("usuario")
+}
+
+model Simulacao {
+  id                Int               @id @default(autoincrement())
+  usuarioId         Int               @map("usuario_id")
+  nome              String
+  intervaloSegundos Int               @map("intervalo_segundos")
+  situacao          SituacaoSimulacao @default(CRIADA)
+  createdAt         DateTime          @default(now()) @map("created_at")
+  updatedAt         DateTime          @updatedAt @map("updated_at")
+
+  usuario Usuario @relation(fields: [usuarioId], references: [id])
+  agents  Agent[]
+  ciclos  Ciclo[]
+
+  @@index([usuarioId])
+  @@map("simulacao")
+}
+
+model Agent {
+  id                    Int      @id @default(autoincrement())
+  usuarioId             Int      @map("usuario_id")
+  simulacaoId           Int      @map("simulacao_id")
+  nomeAgente            String   @map("nome_agente")
+  provedorLlm           String   @map("provedor_llm")
+  chaveApiCriptografada String?  @map("chave_api_criptografada")
+  promptAlma            String   @map("prompt_alma")
+  saldoMd               Int      @default(1000) @map("saldo_md")
+  trustScore            Float    @default(0.5) @map("trust_score")
+  ativo                 Boolean  @default(true)
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  usuario   Usuario   @relation(fields: [usuarioId], references: [id])
+  simulacao Simulacao @relation(fields: [simulacaoId], references: [id], onDelete: Cascade)
+  logs      LogCiclo[]
+
+  @@index([simulacaoId])
+  @@index([usuarioId])
+  @@map("agents")
+}
+
+model Ciclo {
+  id              Int           @id @default(autoincrement())
+  simulacaoId     Int           @map("simulacao_id")
+  numero          Int
+  inicio          DateTime      @default(now())
+  fim             DateTime?
+  situacao        SituacaoCiclo @default(EM_ANDAMENTO)
+  totalAgentes    Int           @default(0) @map("total_agentes")
+  decisoesValidas Int           @default(0) @map("decisoes_validas")
+  erro            String?
+  /// Parte do relatório de percepção igual para todos os agentes (ranking, tópicos, ações), gravada uma vez por ciclo.
+  relatorioComum  Json?         @map("relatorio_comum")
+
+  simulacao Simulacao  @relation(fields: [simulacaoId], references: [id], onDelete: Cascade)
+  logs      LogCiclo[]
+
+  @@unique([simulacaoId, numero])
+  @@map("ciclo")
+}
+
+model LogCiclo {
+  id            Int       @id @default(autoincrement())
+  cicloId       Int       @map("ciclo_id")
+  agentId       Int?      @map("agent_id")
+  fase          FaseCiclo
+  acao          String?
+  valido        Boolean   @default(true)
+  detalhes      Json
+  latenciaMs    Int?      @map("latencia_ms")
+  tokensEntrada Int?      @map("tokens_entrada")
+  tokensSaida   Int?      @map("tokens_saida")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  ciclo Ciclo  @relation(fields: [cicloId], references: [id], onDelete: Cascade)
+  agent Agent? @relation(fields: [agentId], references: [id], onDelete: SetNull)
+
+  @@index([cicloId, fase])
+  @@index([agentId, createdAt])
+  @@index([fase, createdAt])
+  @@map("logs")
 }
