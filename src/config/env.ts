@@ -11,6 +11,12 @@ const envSchema = z.object({
   JWT_ACCESS_SECRET: z.string().min(16, "JWT_ACCESS_SECRET precisa ter pelo menos 16 caracteres"),
   JWT_ACCESS_TTL_MINUTES: z.coerce.number().int().positive().default(15),
   JWT_REFRESH_TTL_DAYS: z.coerce.number().int().positive().default(7),
+  // Orquestrador de ciclos (Etapa 5)
+  CICLO_INTERVALO_PADRAO_SEGUNDOS: z.coerce.number().int().positive().default(300),
+  DECISAO_CONCORRENCIA: z.coerce.number().int().positive().default(5),
+  DECISAO_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
+  DECISAO_TENTATIVAS: z.coerce.number().int().min(1).default(2),
+  LLM_GATEWAY: z.string().default("stub"),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -33,4 +39,9 @@ export const env = {
   jwtAccessSecret: data.JWT_ACCESS_SECRET,
   jwtAccessTtlMinutes: data.JWT_ACCESS_TTL_MINUTES,
   jwtRefreshTtlDays: data.JWT_REFRESH_TTL_DAYS,
+  cicloIntervaloPadraoSegundos: data.CICLO_INTERVALO_PADRAO_SEGUNDOS,
+  decisaoConcorrencia: data.DECISAO_CONCORRENCIA,
+  decisaoTimeoutMs: data.DECISAO_TIMEOUT_MS,
+  decisaoTentativas: data.DECISAO_TENTATIVAS,
+  llmGateway: data.LLM_GATEWAY,
 };

@@ -21,4 +21,5 @@ export const Errors = {
     new AppError(401, "invalid_refresh_token", "Refresh token inválido ou expirado"),
   notFound: (message = "Recurso não encontrado") =>
     new AppError(404, "not_found", message),
+  conflict: (code: string, message: string) => new AppError(409, code, message),
 };

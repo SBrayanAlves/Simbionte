@@ -8,6 +8,7 @@ import { redis } from "./redis/client.ts";
 import { isRabbitMQConnected } from "./queue/rabbitmq.ts";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler.ts";
 import { authRouter } from "./modules/auth/auth.routes.ts";
+import { simulacoesRouter } from "./modules/simulacoes/simulacoes.routes.ts";
 import { openApiSpec } from "./docs/openapi.ts";
 
 export const app = express();
@@ -56,6 +57,7 @@ app.use(
 );
 
 app.use(authRouter);
+app.use(simulacoesRouter);
 
 app.use(notFoundHandler);
 app.use(errorHandler);
